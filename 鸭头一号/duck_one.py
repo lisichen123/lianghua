@@ -8,7 +8,7 @@ import json
 import schedule
 import time
 import datetime
-
+from five_day_mv import select_up_ma5_stocks
 # ===================== 数据库配置（和之前一致） =====================
 MYSQL_CONFIG = {
     "host": "localhost",
@@ -306,18 +306,47 @@ def cal_duck():
     conn.close()
     return final_selected
 
+def format_duck_stock(duck_data):
+    # 如果没有数据
+    if not duck_data:
+        return "暂无符合条件股票"
+    # 遍历格式化每一只股票
+    stock_lines = []
+    for ts_code, trade_date in duck_data:
+        # 把日期转成 2026-04-23 格式
+        date_str = trade_date.strftime("%Y-%m-%d")
+        stock_lines.append(f"股票：{ts_code} | 日期：{date_str}")
+    # 换行拼接
+    return "\n".join(stock_lines)
 
-# 2. 核心任务：每晚22:30执行，判断当天是否是交易日
+# 2. 核心任务：每晚23:30执行，判断当天是否是交易日
 def check_today_is_trade_day():
     # 获取今天日期 格式：2026-01-05
     today = datetime.date.today().strftime("%Y-%m-%d")
     print(f"\n🕘 定时任务执行：当前检测日期 = {today}")
     if today in trade_day_list:
         print(f"✅ {today} 是股票交易日/工作日")
+        # ------------------- 你的原有主逻辑（仅修改拼接部分） -------------------
         today_duck_stock = cal_duck()
         print('鸭头计算完成')
         time.sleep(1)
-        send_email(today_duck_stock)
+
+        five_day_mv = select_up_ma5_stocks()
+        print('五日均线选股完成')
+        time.sleep(1)
+
+        # 格式化鸭头数据
+        formatted_duck = format_duck_stock(today_duck_stock)
+
+        # 最终拼接（整洁换行，邮件完美显示）
+        final_data = f"""【鸭头形态选股结果】
+        {formatted_duck}
+        
+        【沿5日均线强势上升选股结果】
+        {five_day_mv}"""
+        
+        # 发送邮件
+        send_email(final_data)
 
         # 这里可以加你业务：发通知、跑脚本、推送消息等
     else:
@@ -326,7 +355,7 @@ def check_today_is_trade_day():
 # 3. 初始化：先加载一次日期列表
 load_trade_days()
 
-# 4. 设置定时：每天晚上22点30分执行
+# 4. 设置定时：每天晚上23点30分执行
 schedule.every().day.at("23:30").do(check_today_is_trade_day)
 
 # 5. 死循环跑定时

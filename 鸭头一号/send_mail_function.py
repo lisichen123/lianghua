@@ -10,6 +10,7 @@ def send_email(result):
     receiver_list = [
         "1114716195@qq.com",
         "172004133@qq.com",
+        "304710380@qq.com"
     ]
 
     auth_code = "iwmlrydauaafgijf"

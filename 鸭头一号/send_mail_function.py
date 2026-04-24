@@ -9,7 +9,7 @@ def send_email(result):
     # ===================== 多邮箱配置（直接在这里加） =====================
     receiver_list = [
         "1114716195@qq.com",
-        "第二个邮箱@qq.com",
+        "172004133@qq.com",
     ]
 
     auth_code = "iwmlrydauaafgijf"

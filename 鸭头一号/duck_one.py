@@ -1,5 +1,9 @@
 import datetime
+import re
 import time
+
+import pandas as pd
+
 from send_mail_function import send_email
 import pymysql
 import numpy as np
@@ -8,6 +12,11 @@ import json
 import schedule
 import time
 import datetime
+import mplfinance as mpf
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import Image
+import os
 from five_day_mv import select_up_ma5_stocks
 # ===================== 数据库配置（和之前一致） =====================
 MYSQL_CONFIG = {
@@ -18,6 +27,22 @@ MYSQL_CONFIG = {
     "db": "stock_data",
     "charset": "utf8mb4"
 }
+KLINE_DAYS = 30  # 近1个月K线（30个交易日）
+PDF_SAVE_PATH = "今日股票K线图.pdf"  # PDF保存路径
+
+mc = mpf.make_marketcolors(
+    up='red',    # 上涨=红色
+    down='green',# 下跌=绿色
+    edge='inherit',
+    wick='inherit',
+    volume='inherit'
+)
+# 创建A股专用样式
+a_stock_style = mpf.make_mpf_style(
+    marketcolors=mc,
+    gridstyle='',  # 无网格
+    rc={'font.sans-serif': ['SimHei']}  # 中文不乱码
+)
 
 # 全局缓存交易日列表（避免每次查库）
 trade_day_list = []
@@ -319,6 +344,114 @@ def format_duck_stock(duck_data):
     # 换行拼接
     return "\n".join(stock_lines)
 
+
+def get_stock_kline(ts_code):
+    """
+    拉取单只股票近30个交易日K线数据
+    返回：pandas.DataFrame（标准K线格式）
+    """
+    conn = pymysql.connect(**MYSQL_CONFIG)
+    # 查询近30个交易日数据，按日期升序
+    sql = f"""
+        SELECT trade_date, open, high, low, close, vol 
+        FROM stock_forward_adjusted 
+        WHERE ts_code = %s 
+        ORDER BY trade_date DESC 
+        LIMIT {KLINE_DAYS}
+    """
+    df = pd.read_sql(sql, conn, params=(ts_code,))
+    conn.close()
+
+    # 数据格式化（mplfinance专用）
+    df['trade_date'] = pd.to_datetime(df['trade_date'])
+    df = df.sort_values('trade_date').set_index('trade_date')
+    df.rename(columns={'vol': 'volume'}, inplace=True)
+    return df
+
+
+# ===================== 3. 绘制单只股票K线图（带MA5） =====================
+def plot_kline(df, ts_code):
+    """
+    绘制K线图，返回图片临时路径
+    """
+    img_path = f"temp_{ts_code}.png"
+    # 绘图配置：K线 + MA5 + 成交量
+    mpf.plot(
+        df,
+        type='candle',  # 蜡烛图
+        mav=5,  # 5日均线
+        volume=True,  # 成交量
+        title=f'{ts_code} 近1个月K线图',
+        style=a_stock_style,  # 正确样式
+        savefig=img_path
+    )
+    return img_path
+
+
+# ===================== 4. 批量画图 + 生成PDF =====================
+def create_kline_pdf(stock_codes):
+    """
+    批量画K线图，合并生成PDF
+    """
+    if not stock_codes:
+        print("无股票，跳过生成PDF")
+        return None
+
+    # 创建PDF
+    c = canvas.Canvas(PDF_SAVE_PATH, pagesize=A4)
+    width, height = A4
+
+    print(f"\n开始绘制 {len(stock_codes)} 只股票K线图...")
+    temp_imgs = []
+
+    for code in stock_codes:
+        try:
+            # 拉数据 + 画图
+            df = get_stock_kline(code)
+            if df.empty:
+                print(f"{code} 无数据，跳过")
+                continue
+
+            img_path = plot_kline(df, code)
+            temp_imgs.append(img_path)
+
+            # 插入PDF（一页一只股票）
+            img = Image(img_path)
+            img.drawHeight = height * 0.85
+            img.drawWidth = width * 0.95
+            img.drawOn(c, width * 0.025, height * 0.05)
+            c.showPage()  # 新建一页
+            print(f"✅ 绘制完成：{code}")
+        except Exception as e:
+            print(f"❌ 绘制失败：{code}，错误：{e}")
+
+    # 保存PDF + 删除临时图片
+    c.save()
+    for img in temp_imgs:
+        if os.path.exists(img):
+            os.remove(img)
+
+    print(f"\nPDF生成完成！路径：{os.path.abspath(PDF_SAVE_PATH)}")
+    return PDF_SAVE_PATH
+
+def extract_all_stock_codes(duck_data, five_day_msg):
+    """
+    从鸭头数据 + 5日线结果中，提取所有唯一股票代码
+    """
+    codes = set()
+
+    # 提取鸭头股票代码
+    for item in duck_data:
+        codes.add(item[0])
+
+    # 提取5日线股票代码（正则匹配文本中的股票代码）
+    pattern = r'([0-9]{6}\.[SHSZ]{2})'
+    five_codes = re.findall(pattern, five_day_msg)
+    for code in five_codes:
+        codes.add(code)
+
+    return sorted(list(codes))
+
 # 2. 核心任务：每晚23:30执行，判断当天是否是交易日
 def check_today_is_trade_day():
     # 获取今天日期 格式：2026-01-05
@@ -344,9 +477,15 @@ def check_today_is_trade_day():
         
         【沿5日均线强势上升选股结果】
         {five_day_mv}"""
-        
+
+        # ===================== 【新增：自动绘制K线图 + 生成PDF】 =====================
+        # 1. 提取所有股票代码
+        all_stocks = extract_all_stock_codes(today_duck_stock, five_day_mv)
+        # 2. 生成PDF
+        pdf_file = create_kline_pdf(all_stocks, )
+
         # 发送邮件
-        send_email(final_data)
+        send_email(final_data, pdf_file)  # 注意：send_email需要支持附件，我下面给你改好！
 
         # 这里可以加你业务：发通知、跑脚本、推送消息等
     else:
@@ -356,11 +495,11 @@ def check_today_is_trade_day():
 load_trade_days()
 
 # 4. 设置定时：每天晚上23点30分执行
-schedule.every().day.at("23:30").do(check_today_is_trade_day)
+schedule.every().day.at("12:49").do(check_today_is_trade_day)
 
 # 5. 死循环跑定时
 if __name__ == '__main__':
     print("⏰ 定时服务已启动，每日23:30自动检测当日是否为交易日...")
     while True:
         schedule.run_pending()
-        time.sleep(30)  # 30秒轮询一次，轻量化不耗性能
+        time.sleep(5)  # 30秒轮询一次，轻量化不耗性能

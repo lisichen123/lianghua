@@ -370,30 +370,29 @@ def get_stock_kline(ts_code):
 
 
 # ===================== 3. 绘制单只股票K线图（带MA5） =====================
-def plot_kline(df, ts_code):
-    """
-    绘制K线图，返回图片临时路径
-    """
+def plot_kline(df, ts_code, stock_name):
     img_path = f"temp_{ts_code}.png"
-    # 绘图配置：K线 + MA5 + 成交量
     mpf.plot(
         df,
-        type='candle',  # 蜡烛图
-        mav=5,  # 5日均线
-        volume=True,  # 成交量
-        title=f'{ts_code} 近1个月K线图',
-        style=a_stock_style,  # 正确样式
-        savefig=img_path
+        type='candle',
+        mav=5,
+        volume=True,
+        # PDF标题显示：代码 + 名称
+        title=f'{ts_code} {stock_name} 近1个月K线图(MA5)',
+        style=a_stock_style,
+        savefig=img_path,
+        figratio=(10, 6)
     )
     return img_path
 
 
 # ===================== 4. 批量画图 + 生成PDF =====================
-def create_kline_pdf(stock_codes):
+def create_kline_pdf(stock_codes_with_name):
     """
     批量画K线图，合并生成PDF
+    stock_codes_with_name: [(code, name), ...]
     """
-    if not stock_codes:
+    if not stock_codes_with_name:
         print("无股票，跳过生成PDF")
         return None
 
@@ -401,31 +400,33 @@ def create_kline_pdf(stock_codes):
     c = canvas.Canvas(PDF_SAVE_PATH, pagesize=A4)
     width, height = A4
 
-    print(f"\n开始绘制 {len(stock_codes)} 只股票K线图...")
+    print(f"\n开始绘制 {len(stock_codes_with_name)} 只股票K线图...")
     temp_imgs = []
 
-    for code in stock_codes:
+    # 遍历：代码 + 名称（顺序完全不变）
+    for code, name in stock_codes_with_name:
         try:
-            # 拉数据 + 画图
+            # 拉数据
             df = get_stock_kline(code)
             if df.empty:
                 print(f"{code} 无数据，跳过")
                 continue
 
-            img_path = plot_kline(df, code)
+            # 绘图（标题带名称）
+            img_path = plot_kline(df, code, name)
             temp_imgs.append(img_path)
 
-            # 插入PDF（一页一只股票）
+            # 插入PDF
             img = Image(img_path)
             img.drawHeight = height * 0.85
             img.drawWidth = width * 0.95
             img.drawOn(c, width * 0.025, height * 0.05)
-            c.showPage()  # 新建一页
-            print(f"✅ 绘制完成：{code}")
+            c.showPage()
+            print(f"✅ 绘制完成：{code} | {name}")
         except Exception as e:
             print(f"❌ 绘制失败：{code}，错误：{e}")
 
-    # 保存PDF + 删除临时图片
+    # 保存+清理
     c.save()
     for img in temp_imgs:
         if os.path.exists(img):
@@ -434,33 +435,68 @@ def create_kline_pdf(stock_codes):
     print(f"\nPDF生成完成！路径：{os.path.abspath(PDF_SAVE_PATH)}")
     return PDF_SAVE_PATH
 
+
+import pandas as pd
+import re
+
+
 def extract_all_stock_codes(duck_data, five_day_msg):
     """
-    严格顺序：先鸭头 → 后五日均线，不乱序、不打乱
+    严格顺序：先鸭头 → 后五日均线
+    修复：股票前6位精准匹配Excel，解决空格/格式问题
     """
-    codes = []
+    # ===================== 1. 健壮读取Excel =====================
+    stock_name_map = {}  # key:前6位代码  value:股票名称
+    try:
+        # 读取Excel，强制字符串，跳过空行
+        df_excel = pd.read_excel("data_corp.xlsx", dtype=str).fillna("")
+        # 【核心】清除所有单元格首尾空格，解决匹配失败问题
+        df_excel = df_excel.apply(lambda x: x.astype(str).str.strip())
+
+        # 遍历Excel，构建【前6位代码→名称】映射表
+        for _, row in df_excel.iterrows():
+            col1 = row.iloc[0]  # 第一列
+            col4 = row.iloc[3]  # 第四列
+            name = row.iloc[1]  # 第二列（名称）
+
+            # 第一列：提取前6位存入映射
+            if len(col1) >= 6:
+                stock_name_map[col1[:6]] = name
+            # 第四列：提取前6位存入映射
+            if len(col4) >= 6:
+                stock_name_map[col4[:6]] = name
+
+    except Exception as e:
+        print(f"⚠️ Excel读取/匹配失败：{e}，将使用股票代码代替名称")
+
+    # ===================== 2. 按顺序提取股票（顺序绝对不变） =====================
+    codes_with_name = []
     seen = set()
 
-    # ① 优先：鸭头形态 原始顺序
+    # ① 鸭头形态（原顺序）
     for item in duck_data:
-        c = item[0]
-        if c not in seen:
-            seen.add(c)
-            codes.append(c)
+        code = item[0]
+        if code not in seen:
+            seen.add(code)
+            # 取前6位查名称
+            prefix = code[:6]
+            name = stock_name_map.get(prefix, code)
+            codes_with_name.append((code, name))
 
-    # ② 其次：五日均线 从上到下顺序
+    # ② 五日均线（原顺序）
     pattern = r'([0-9]{6}\.[SHSZ]{2})'
     five_codes = re.findall(pattern, five_day_msg)
-    for c in five_codes:
-        if c not in seen:
-            seen.add(c)
-            codes.append(c)
+    for code in five_codes:
+        if code not in seen:
+            seen.add(code)
+            prefix = code[:6]
+            name = stock_name_map.get(prefix, code)
+            codes_with_name.append((code, name))
 
-    # 完全按：鸭头在先、五日在后，顺序不变
-    return codes
+    return codes_with_name
 
 # 2. 核心任务：每晚23:30执行，判断当天是否是交易日
-def check_today_is_trade_day():
+def main_function():
     # 获取今天日期 格式：2026-01-05
     today = datetime.date.today().strftime("%Y-%m-%d")
     print(f"\n🕘 定时任务执行：当前检测日期 = {today}")
@@ -502,7 +538,7 @@ def check_today_is_trade_day():
 load_trade_days()
 
 # 4. 设置定时：每天晚上23点30分执行
-schedule.every().day.at("23:30").do(check_today_is_trade_day)
+schedule.every().day.at("14:32").do(main_function)
 
 # 5. 死循环跑定时
 if __name__ == '__main__':

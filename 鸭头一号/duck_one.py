@@ -436,21 +436,28 @@ def create_kline_pdf(stock_codes):
 
 def extract_all_stock_codes(duck_data, five_day_msg):
     """
-    从鸭头数据 + 5日线结果中，提取所有唯一股票代码
+    严格顺序：先鸭头 → 后五日均线，不乱序、不打乱
     """
-    codes = set()
+    codes = []
+    seen = set()
 
-    # 提取鸭头股票代码
+    # ① 优先：鸭头形态 原始顺序
     for item in duck_data:
-        codes.add(item[0])
+        c = item[0]
+        if c not in seen:
+            seen.add(c)
+            codes.append(c)
 
-    # 提取5日线股票代码（正则匹配文本中的股票代码）
+    # ② 其次：五日均线 从上到下顺序
     pattern = r'([0-9]{6}\.[SHSZ]{2})'
     five_codes = re.findall(pattern, five_day_msg)
-    for code in five_codes:
-        codes.add(code)
+    for c in five_codes:
+        if c not in seen:
+            seen.add(c)
+            codes.append(c)
 
-    return sorted(list(codes))
+    # 完全按：鸭头在先、五日在后，顺序不变
+    return codes
 
 # 2. 核心任务：每晚23:30执行，判断当天是否是交易日
 def check_today_is_trade_day():
@@ -495,11 +502,11 @@ def check_today_is_trade_day():
 load_trade_days()
 
 # 4. 设置定时：每天晚上23点30分执行
-schedule.every().day.at("12:49").do(check_today_is_trade_day)
+schedule.every().day.at("23:30").do(check_today_is_trade_day)
 
 # 5. 死循环跑定时
 if __name__ == '__main__':
     print("⏰ 定时服务已启动，每日23:30自动检测当日是否为交易日...")
     while True:
         schedule.run_pending()
-        time.sleep(5)  # 30秒轮询一次，轻量化不耗性能
+        time.sleep(28)  # 30秒轮询一次，轻量化不耗性能
